@@ -1,0 +1,213 @@
+name: build
+
+# Every push / pull request: build, test, smoke-test and package the game on Linux, Windows and macOS; the packages (and
+# the smoke tests' screenshots) are kept as the run's artifacts. Pushing a tag v* (for example v1.0.0) also publishes the
+# three packages as a GitHub Release (scripts/release.sh VERSION --push does the tagging).
+#
+# Each native package (scripts/package.sh) is one folder: the program, the question banks, README.txt and licences.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    # Pinned rather than -latest: reproducible, and the older glibc lets the program run on more distributions.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      SDL_VERSION: 2.32.10
+    steps:
+      - uses: actions/checkout@v4
+      # SDL2 is built from the official source as a static library, so the program needs no libSDL2 on the user's computer.
+      # SDL loads the X11, Wayland, ALSA and PulseAudio libraries of the user's desktop at run time (dlopen), so those are
+      # only needed here as headers.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config cmake libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxfixes-dev libxss-dev libxkbcommon-dev libwayland-dev wayland-protocols libasound2-dev \
+            libpulse-dev libdrm-dev libgbm-dev libegl1-mesa-dev libgl1-mesa-dev libudev-dev
+      - name: Build static SDL2
+        run: |
+          curl -fsSL -o sdl.tar.gz \
+            "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL2-${SDL_VERSION}.tar.gz"
+          tar -xzf sdl.tar.gz
+          cmake -S "SDL2-${SDL_VERSION}" -B sdl-build -DCMAKE_BUILD_TYPE=Release \
+                -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF
+          cmake --build sdl-build --parallel
+          cmake --install sdl-build --prefix "$PWD/sdl"
+      - name: Version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="dev-${GITHUB_SHA::7}"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - run: make -j4 VERSION="$VERSION" SDL_CONFIG="$PWD/sdl/bin/sdl2-config"
+      - name: Check the program needs only the C library
+        run: |
+          ldd sraz
+          if ldd sraz | grep -vE 'linux-vdso|ld-linux|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so'; then
+            echo "the program depends on a library beyond the C library"; exit 1
+          fi
+      - name: Tests
+        run: make test
+      # Starts the program headless, draws a few screens, exits.
+      - name: Smoke test
+        timeout-minutes: 2
+        run: |
+          mkdir -p build
+          for s in 0 1 2 4 5; do
+            SDL_VIDEODRIVER=dummy ./sraz --shot build/shot-linux-$s.png --scene $s
+            test -s build/shot-linux-$s.png
+          done
+      - name: Package
+        run: bash scripts/package.sh linux "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-linux
+          path: dist/*
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot-linux
+          path: build/shot-*.png
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          # UCRT64 is MSYS2's recommended environment (MINGW64 is deprecated).
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            zip
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-pkgconf
+      - name: Version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="dev-${GITHUB_SHA::7}"; fi
+          echo "$v" > version.txt
+      - run: make -j4 VERSION="$(cat version.txt)"
+      - name: Tests
+        run: make test
+      - name: Check the program needs only Windows' own DLLs
+        run: |
+          objdump -p sraz.exe | grep 'DLL Name'
+          if objdump -p sraz.exe | grep 'DLL Name' | grep -viE 'KERNEL32|USER32|GDI32|ADVAPI32|SHELL32|OLE32|OLEAUT32|IMM32|SETUPAPI|VERSION|WINMM|WS2_32|MSVCRT|api-ms-win-crt'; then
+            echo "the program needs a DLL that Windows does not provide"; exit 1
+          fi
+      - name: Smoke test
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build | Out-Null
+          $env:SDL_VIDEODRIVER = 'dummy'
+          foreach ($s in 0,1,2,4,5) {
+            $p = Start-Process -PassThru -Wait ./sraz.exe -ArgumentList "--shot build/shot-windows-$s.png --scene $s"
+            if ($p.ExitCode -ne 0 -or -not (Test-Path "build/shot-windows-$s.png")) { throw "scene $s did not draw (exit $($p.ExitCode))" }
+          }
+      # SDL2 is linked statically: the .exe needs nothing beside it but the questions folder.
+      - name: Package
+        run: bash scripts/package.sh windows "$(cat version.txt)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-windows
+          path: dist/*
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot-windows
+          path: build/shot-*.png
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      SDL_VERSION: 2.32.10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="dev-${GITHUB_SHA::7}"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      # SDL2 is built from the official source as a static, universal library: no bundled dylibs, one program for Apple
+      # Silicon and Intel (Homebrew's sdl2 is now sdl2-compat, which loads SDL3 at run time).
+      - name: Build static SDL2
+        run: |
+          curl -fsSL -o sdl.tar.gz \
+            "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL2-${SDL_VERSION}.tar.gz"
+          tar -xzf sdl.tar.gz
+          cmake -S "SDL2-${SDL_VERSION}" -B sdl-build -DCMAKE_BUILD_TYPE=Release \
+                -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF \
+                -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+                -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake --build sdl-build --parallel
+          cmake --install sdl-build --prefix "$PWD/sdl"
+      - name: Build
+        run: |
+          SDL_LIBS="$(sdl/bin/sdl2-config --static-libs)"
+          echo "SDL_LIBS=$SDL_LIBS"
+          if [ -z "$SDL_LIBS" ]; then echo "sdl2-config returned no flags"; exit 1; fi
+          # DEPFLAGS empty: a compiler given two -arch flags cannot write one dependency file
+          make -j4 VERSION="$VERSION" DEPFLAGS= \
+               CC="clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0" \
+               SDL_CONFIG="$PWD/sdl/bin/sdl2-config" SDL_LIBS="$SDL_LIBS"
+          lipo -info sraz
+      - name: Tests
+        run: make test DEPFLAGS=
+      - name: Package
+        run: bash scripts/package.sh macos "$VERSION"
+      - name: Check the program needs only system libraries
+        run: |
+          mkdir -p check && ditto -x -k dist/*.zip check
+          bin=$(echo check/*/Sraz.app/Contents/MacOS/sraz)
+          otool -L "$bin"
+          if otool -L "$bin" | grep -E '^[[:space:]]' | grep -vE '^[[:space:]]*(/System/Library/|/usr/lib/)'; then
+            echo "the program depends on a library outside macOS"; exit 1
+          fi
+      - name: Smoke test
+        timeout-minutes: 2
+        run: |
+          mkdir -p build
+          bin=$(echo check/*/Sraz.app/Contents/MacOS/sraz)
+          for s in 0 1 2 4 5; do
+            SDL_VIDEODRIVER=dummy "$bin" --shot build/shot-macos-$s.png --scene $s
+            test -s build/shot-macos-$s.png
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-macos
+          path: dist/*
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot-macos
+          path: build/shot-*.png
+
+  release:
+    timeout-minutes: 10
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to create the release
+    steps:
+      - uses: actions/checkout@v4   # for release/NOTES.md
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-{linux,windows,macos}
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body_path: release/NOTES.md
+          generate_release_notes: true

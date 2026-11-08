@@ -1,0 +1,24 @@
+# build output
+build/
+build-*/
+dist/
+*.exe
+*.o
+*.d
+/sraz
+# local files of a run
+sraz.cfg
+sraz.sav
+err.txt
+__pycache__/
+*.pyc
+# older files that are not part of the project
+src/*.dll
+src/legacy/
+src/assets/
+src/build/
+src/build.ps1
+src/runtime-dlls.json
+src/questions/
+src/fonts/
+src/sraz

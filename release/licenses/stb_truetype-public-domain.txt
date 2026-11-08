@@ -1,0 +1,2 @@
+﻿stb_truetype.h - public domain, authored 2009-2021 by Sean Barrett / RAD Game Tools.
+Alternatively available under the MIT license; see the end of stb_truetype.h in the source distribution.
