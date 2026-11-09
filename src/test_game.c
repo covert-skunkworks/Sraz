@@ -14,6 +14,7 @@
 
 #include "game.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 //------------------------------------------------------------------------------
@@ -377,6 +378,76 @@ static void test_questions( void )
 }
 
 /**
+  * @brief  Draw every question of one bank: each is asked exactly once.
+  *
+  * The picks run over the whole bank, so a bank larger than the original
+  * 1000 English questions (the Croatian one has 1945) is not cut short.
+  *
+  * @param  dir Question directory.
+  * @param  language Bank language.
+  * @param  expected Number of questions the bank must hold.
+  * @param  name Bank name for the messages.
+  * @retval None.
+  */
+static void test_whole_bank( const char *dir, quiz_language language,
+                             long expected, const char *name )
+{
+	quiz_bank      qz = { 0 };
+	unsigned char *seen;
+	long           lo, hi, i, idx, wrong = 0, count = 0;
+	int            cat;
+
+	if ( quiz_load( &qz, dir, language ) != 0 )
+	{
+		test_check( 0, "the question bank loads" );
+		return;
+	}
+	test_check( qz.total == expected, name );
+	seen = calloc( (size_t)qz.total, 1 );
+	test_check( seen != NULL, "memory for the check" );
+	if ( !seen )
+	{
+		quiz_free( &qz );
+		return;
+	}
+	quiz_reset_used( &qz );
+	for ( cat = 1; cat <= QUIZ_NCAT; cat++ )
+	{
+		lo = cat == 1 ? 0 : (long)qz.bound[cat - 2];
+		hi = (long)qz.bound[cat - 1];
+		for ( i = lo; i < hi; i++ )
+		{
+			idx = quiz_pick_unused( &qz, cat );
+			if ( idx < lo || idx >= hi || seen[idx] )
+			{
+				wrong++;
+			}
+			else
+			{
+				seen[idx] = 1;
+				count++;
+			}
+		}
+	}
+	test_check( wrong == 0 && count == qz.total,
+	            "every question of every category is asked once" );
+	free( seen );
+	quiz_free( &qz );
+}
+
+/**
+  * @brief  Test that the whole English and Croatian banks can be used.
+  * @retval None.
+  */
+static void test_banks( void )
+{
+	test_whole_bank( "questions/en", QUIZ_LANGUAGE_EN, 1000,
+	                 "the English bank holds 1000 questions" );
+	test_whole_bank( "questions/cro", QUIZ_LANGUAGE_CRO, 1945,
+	                 "the Croatian bank holds 1945 questions" );
+}
+
+/**
   * @brief  Test the selection helpers (R-34).
   * @retval None.
   */
@@ -495,6 +566,7 @@ int main( void )
 	test_timer();
 	test_turns();
 	test_questions();
+	test_banks();
 	test_selection();
 	test_snapshot();
 	test_save();

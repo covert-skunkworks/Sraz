@@ -401,7 +401,7 @@ static void ug_draw_question( app *a )
 		state = 0;
 		if ( g->answered )
 		{
-			state = i == g->correct_slot ? 2 : ( i == g->picked ? 3 : 4 );
+			state = i == g->picked ? ( g->was_correct ? 2 : 3 ) : 4;  // The right answer is not revealed.
 		}
 		else if ( i == g->hilite && mine )
 		{
